@@ -79,8 +79,10 @@ export default function App() {
           <div style={{ fontWeight: 600 }}>Slash command</div>
           <code>/tool &lt;name&gt; &lt;json&gt;</code>
           <div style={{ fontSize: 12, marginTop: 8 }}>Examples:</div>
-          <pre style={{ background: "#f7f7f7", padding: 8, fontSize: 12 }}>/tool math.add {"a":2,"b":3}
-/tool http.getTitle {"url":"https://example.com"}</pre>
+          <pre style={{ background: "#f7f7f7", padding: 8, fontSize: 12 }}>
+            {`/tool math.add {"a":2,"b":3}
+/tool http.getTitle {"url":"https://example.com"}`}
+          </pre>
           {toolHint && (
             <div>
               <div style={{ fontWeight: 600, marginTop: 8 }}>Available tools</div>
@@ -112,4 +114,3 @@ export default function App() {
     </div>
   );
 }
-
