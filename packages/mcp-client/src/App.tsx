@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { connectMcp, listTools, callTool, isMcpConnected } from "./mcp";
-import { ensureLlm, isLlmReady, getLlmProgress, summarizeTool, planToolCall } from "./llm";
+import { summarizeTool, planToolCall } from "./llm";
 import "./app.css";
 
 type Msg = {
@@ -29,9 +29,7 @@ export default function App() {
   const [messages, setMessages] = useState<Msg[]>([]);
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [showSuggestions, setShowSuggestions] = useState(false);
-  const [useLocalLlm, setUseLocalLlm] = useState(false);
-  const [autoPlanTools, setAutoPlanTools] = useState(false);
-  const [llmProgress, setLlmProgress] = useState(0);
+  const [autoPlanTools, setAutoPlanTools] = useState(true);
   const scrollRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -133,20 +131,14 @@ export default function App() {
             : msg
         ));
 
-        // Optional: LLM explanation
-        if (useLocalLlm) {
-          const explainId = crypto.randomUUID();
-          setMessages((m) => [...m, { id: explainId, role: "assistant", text: "Summarizing with local LLM…", loading: true }]);
-          try {
-            // Initialize once and track progress
-            await ensureLlm();
-            const timer = setInterval(() => setLlmProgress(getLlmProgress()), 200);
-            const summary = await summarizeTool(cmd.name, cmd.args, out);
-            clearInterval(timer);
-            setMessages((m) => m.map((msg) => msg.id === explainId ? ({ ...msg, loading: false, text: summary }) : msg));
-          } catch (e) {
-            setMessages((m) => m.map((msg) => msg.id === explainId ? ({ ...msg, loading: false, text: `LLM error: ${e}` }) : msg));
-          }
+        // Natural-language summary via server
+        const explainId = crypto.randomUUID();
+        setMessages((m) => [...m, { id: explainId, role: "assistant", text: "Summarizing…", loading: true }]);
+        try {
+          const summary = await summarizeTool(cmd.name, cmd.args, out);
+          setMessages((m) => m.map((msg) => msg.id === explainId ? ({ ...msg, loading: false, text: summary }) : msg));
+        } catch (e) {
+          setMessages((m) => m.map((msg) => msg.id === explainId ? ({ ...msg, loading: false, text: `Summary error: ${e}` }) : msg));
         }
       } catch (e: any) {
         setMessages((m) => m.map((msg) =>
@@ -210,7 +202,6 @@ export default function App() {
         setTools(arr);
         t = arr;
       }
-      await ensureLlm();
       const plan = await planToolCall(t, userText);
       if (!plan || !plan.name) {
         setMessages((m) => m.map((msg) => msg.id === planId ? ({ ...msg, loading: false, text: "I couldn't find a suitable tool for that. You can also use /tool <name> <json>.", steps: [ ...(msg.steps||[]), "No tool matched" ] }) : msg));
@@ -220,17 +211,14 @@ export default function App() {
       const out = await callTool(plan.name, plan.args);
       const outStr = JSON.stringify(out, null, 2);
       setMessages((m) => m.map((msg) => msg.id === planId ? ({ ...msg, loading: false, text: outStr, steps: [ ...(msg.steps||[]), `Result: ${truncateOneLine(out)}` ] }) : msg));
-      if (useLocalLlm) {
-        const explainId = crypto.randomUUID();
-        setMessages((m) => [...m, { id: explainId, role: "assistant", text: "Summarizing with local LLM…", loading: true }]);
-        try {
-          const timer = setInterval(() => setLlmProgress(getLlmProgress()), 200);
-          const summary = await summarizeTool(plan.name, plan.args, out);
-          clearInterval(timer);
-          setMessages((m) => m.map((msg) => msg.id === explainId ? ({ ...msg, loading: false, text: summary }) : msg));
-        } catch (e) {
-          setMessages((m) => m.map((msg) => msg.id === explainId ? ({ ...msg, loading: false, text: `LLM error: ${e}` }) : msg));
-        }
+      // Natural-language summary via server
+      const explainId = crypto.randomUUID();
+      setMessages((m) => [...m, { id: explainId, role: "assistant", text: "Summarizing…", loading: true }]);
+      try {
+        const summary = await summarizeTool(plan.name, plan.args, out);
+        setMessages((m) => m.map((msg) => msg.id === explainId ? ({ ...msg, loading: false, text: summary }) : msg));
+      } catch (e) {
+        setMessages((m) => m.map((msg) => msg.id === explainId ? ({ ...msg, loading: false, text: `Summary error: ${e}` }) : msg));
       }
     } catch (e) {
       setMessages((m) => m.map((msg) => msg.id === planId ? ({ ...msg, loading: false, text: `Auto plan error: ${e}`, error: String(e), steps: [ ...(msg.steps||[]), `Error: ${String(e)}` ] }) : msg));
@@ -245,10 +233,7 @@ export default function App() {
           <div className="title">MCP Assistant</div>
         </div>
         <div className="status" style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-          <button className={`btn ${useLocalLlm? 'primary': ''}`} onClick={()=> setUseLocalLlm(v=>!v)}>
-            LLM: {useLocalLlm? (isLlmReady()? 'On' : `On (downloading ${llmProgress}%)`) : 'Off'}
-          </button>
-          <button className={`btn ${autoPlanTools? 'primary': ''}`} onClick={()=> { setAutoPlanTools(v=>!v); if (!useLocalLlm) setUseLocalLlm(true); }} title="Use LLM to pick a tool for plain messages">
+          <button className={`btn ${autoPlanTools? 'primary': ''}`} onClick={()=> { setAutoPlanTools(v=>!v); }} title="Use planner to pick a tool for plain messages">
             Auto Tool: {autoPlanTools? 'On' : 'Off'}
           </button>
           <span>Server: {ready? "connected" : "connecting..."}</span>
