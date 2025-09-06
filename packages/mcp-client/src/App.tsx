@@ -1,23 +1,37 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { connectMcp, listTools, callTool, isMcpConnected } from "./mcp";
+import "./app.css";
 
 type Msg = { role: "user" | "assistant" | "system"; text: string };
+type Attachment = {
+  id: string;
+  name: string;
+  type: string;
+  size: number;
+  file?: File;
+  previewUrl?: string;
+  url?: string; // use if you host files elsewhere
+};
 
 export default function App() {
   const [ready, setReady] = useState(false);
   const [tools, setTools] = useState<any[]>([]);
   const [input, setInput] = useState("");
-  const [messages, setMessages] = useState<Msg[]>([{
-    role: "system",
-    text: "Connected UI. Use /tool <name> <jsonArgs> to call tools.",
-  }]);
-  const boxRef = useRef<HTMLDivElement>(null);
+  const [messages, setMessages] = useState<Msg[]>([]);
+  const [attachments, setAttachments] = useState<Attachment[]>([]);
+  const [showSuggestions, setShowSuggestions] = useState(false);
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     (async () => {
       try {
         await connectMcp();
         setReady(true);
+        setMessages((m) => [
+          ...m,
+          { role: "assistant", text: "Hi! I’m your MCP Assistant. Ask me to call tools or just chat. Try /tool <name> <json>." },
+        ]);
       } catch (e) {
         setMessages((m) => [...m, { role: "system", text: `Failed to connect MCP: ${e}` }]);
       }
@@ -25,8 +39,8 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    const el = boxRef.current; if (!el) return; el.scrollTop = el.scrollHeight;
-  }, [messages.length]);
+    const el = scrollRef.current; if (!el) return; el.scrollTop = el.scrollHeight;
+  }, [messages.length, attachments.length]);
 
   const parseSlash = (s: string) => {
     const m = s.match(/^\s*\/tool\s+(\S+)\s+([\s\S]+)$/);
@@ -35,14 +49,61 @@ export default function App() {
     try { const args = JSON.parse(m[2]); return { name, args }; } catch { return { name, args: {} }; }
   };
 
-  const onSend = async () => {
-    const text = input.trim(); if (!text) return;
+  const copyText = async (text: string) => {
+    try { await navigator.clipboard.writeText(text); } catch {}
+  };
+
+  const onPaste = async (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
+    const items = e.clipboardData?.items || [];
+    let hasFile = false;
+    for (let i = 0; i < items.length; i++) {
+      const it = items[i];
+      if (it.kind === "file") {
+        const file = it.getAsFile();
+        if (file) {
+          hasFile = true;
+          const id = crypto.randomUUID();
+          const previewUrl = URL.createObjectURL(file);
+          setAttachments((prev) => [
+            ...prev,
+            { id, name: file.name, type: file.type, size: file.size, file, previewUrl },
+          ]);
+        }
+      }
+    }
+    if (hasFile) e.preventDefault();
+  };
+
+  const onFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const f = e.target.files?.[0];
+    if (!f) return;
+    const id = crypto.randomUUID();
+    const previewUrl = URL.createObjectURL(f);
+    setAttachments((prev) => [...prev, { id, name: f.name, type: f.type, size: f.size, file: f, previewUrl }]);
+    if (fileInputRef.current) fileInputRef.current.value = "";
+  };
+
+  const removeAttachment = (id: string) => {
+    setAttachments((prev) => {
+      const att = prev.find((a) => a.id === id);
+      if (att?.previewUrl) { try { URL.revokeObjectURL(att.previewUrl); } catch {}
+      }
+      return prev.filter((a) => a.id !== id);
+    });
+  };
+
+  const handleSend = async () => {
+    if (!input.trim() && attachments.length === 0) return;
+    const message = input.trim();
+    const pending = attachments.slice();
     setInput("");
-    setMessages((m) => [...m, { role: "user", text }]);
-    const cmd = parseSlash(text);
+    setAttachments([]);
+    setMessages((m) => [...m, { role: "user", text: message || "(sent attachments)" }]);
+
+    const cmd = parseSlash(message);
     if (cmd) {
-      if (!isMcpConnected()) await connectMcp();
       try {
+        if (!isMcpConnected()) await connectMcp();
         const out = await callTool(cmd.name, cmd.args);
         setMessages((m) => [...m, { role: "assistant", text: JSON.stringify(out, null, 2) }]);
       } catch (e) {
@@ -50,8 +111,9 @@ export default function App() {
       }
       return;
     }
-    // Simple local echo assistant fallback
-    setMessages((m) => [...m, { role: "assistant", text: "(local) You said: " + text }]);
+
+    // Local echo fallback for plain chat
+    setMessages((m) => [...m, { role: "assistant", text: "(local) I received your message." }]);
   };
 
   const onListTools = async () => {
@@ -59,7 +121,7 @@ export default function App() {
       if (!isMcpConnected()) await connectMcp();
       const t = await listTools();
       setTools(t);
-      setMessages((m) => [...m, { role: "assistant", text: `Tools: ${t.map((x:any)=>x.name).join(", ")}` }]);
+      setMessages((m) => [...m, { role: "assistant", text: `Available tools: ${t.map((x:any)=>x.name).join(", ")}` }]);
     } catch (e) {
       setMessages((m) => [...m, { role: "assistant", text: `List tools failed: ${e}` }]);
     }
@@ -67,50 +129,134 @@ export default function App() {
 
   const toolHint = useMemo(() => tools.map((t:any)=>`- ${t.name}${t.description?`: ${t.description}`:""}`).join("\n"), [tools]);
 
+  const samples = [
+    "Call a health check: /tool ping {}",
+    "Add numbers: /tool math.add {\"a\":2,\"b\":3}",
+    "What time is it? /tool time.now {}",
+    "Fetch a page title: /tool http.getTitle {\"url\":\"https://example.com\"}",
+  ];
+
   return (
-    <div style={{ display: "flex", height: "100vh", fontFamily: "Inter, ui-sans-serif, system-ui, sans-serif" }}>
-      <div style={{ width: 320, borderRight: "1px solid #eee", padding: 16 }}>
-        <h2>MCP Chat</h2>
-        <div style={{ fontSize: 12, color: ready?"#0a0":"#a00" }}>Status: {ready?"connected":"connecting..."}</div>
-        <div style={{ marginTop: 16 }}>
-          <button onClick={onListTools}>List Tools</button>
+    <div className="chat-root">
+      <header className="chat-header">
+        <div className="chat-header-left">
+          <img className="avatar" src={`https://api.dicebear.com/7.x/bottts-neutral/svg?seed=MCP`} alt="Assistant" />
+          <div className="title">MCP Assistant</div>
         </div>
-        <div style={{ marginTop: 16 }}>
-          <div style={{ fontWeight: 600 }}>Slash command</div>
-          <code>/tool &lt;name&gt; &lt;json&gt;</code>
-          <div style={{ fontSize: 12, marginTop: 8 }}>Examples:</div>
-          <pre style={{ background: "#f7f7f7", padding: 8, fontSize: 12 }}>
-            {`/tool math.add {"a":2,"b":3}
-/tool http.getTitle {"url":"https://example.com"}`}
-          </pre>
+        <div className="status">Status: {ready? "connected" : "connecting..."}</div>
+      </header>
+
+      <div className="chat-body" ref={scrollRef}>
+        {messages.length === 0 && (
+          <div className="intro">
+            <img className="avatar small" src={`https://api.dicebear.com/7.x/bottts-neutral/svg?seed=MCP`} alt="Assistant" />
+            <div className="bubble assistant">Hi! I’m your MCP Assistant. Ask me to call tools or just chat. Try the examples below.</div>
+          </div>
+        )}
+
+        {messages.map((m, i) => {
+          const isUser = m.role === "user";
+          return (
+            <div key={i} className={`msg-row ${isUser?"right":"left"}`}>
+              {!isUser && (
+                <img className="avatar small" src={`https://api.dicebear.com/7.x/bottts-neutral/svg?seed=MCP`} alt="Assistant" />
+              )}
+              <div className={`bubble ${isUser?"user":"assistant"}`}>
+                <pre className="pre">{m.text}</pre>
+                {!isUser && (
+                  <div className="bubble-actions">
+                    <button className="link" onClick={() => copyText(m.text)}>Copy</button>
+                  </div>
+                )}
+              </div>
+              {isUser && (
+                <div className="avatar small circle user">U</div>
+              )}
+            </div>
+          );
+        })}
+
+        <div className="samples">
+          <div className="hint">Examples</div>
+          <div className="chips">
+            {samples.map((s, i) => (
+              <button key={i} className="chip" onClick={() => setInput(s)}>{s}</button>
+            ))}
+            <button className="chip ghost" onClick={() => setShowSuggestions(true)}>Show more…</button>
+          </div>
           {toolHint && (
-            <div>
-              <div style={{ fontWeight: 600, marginTop: 8 }}>Available tools</div>
-              <pre style={{ background: "#f7f7f7", padding: 8, fontSize: 12, maxHeight: 200, overflow: "auto" }}>{toolHint}</pre>
+            <div className="tools">
+              <div className="hint">Available tools</div>
+              <pre className="pre muted">{toolHint}</pre>
             </div>
           )}
         </div>
       </div>
-      <div style={{ flex: 1, display: "flex", flexDirection: "column" }}>
-        <div ref={boxRef} style={{ flex: 1, overflow: "auto", padding: 16 }}>
-          {messages.map((m, i) => (
-            <div key={i} style={{ margin: "8px 0" }}>
-              <div style={{ fontSize: 12, color: "#666" }}>{m.role}</div>
-              <pre style={{ whiteSpace: "pre-wrap", margin: 0 }}>{m.text}</pre>
-            </div>
-          ))}
+
+      {attachments.length > 0 && (
+        <div className="attachments">
+          {attachments.map((a) => {
+            const isImage = a.type.startsWith("image/");
+            const isVideo = a.type.startsWith("video/");
+            return (
+              <div key={a.id} className="att-box">
+                {isImage && <img className="att-media" src={a.previewUrl || a.url} alt={a.name} />}
+                {isVideo && <video className="att-media" src={a.previewUrl || a.url} muted />}
+                {!isImage && !isVideo && <div className="att-fallback">{a.name}</div>}
+                <button className="att-remove" onClick={() => removeAttachment(a.id)} aria-label={`Remove ${a.name}`}>×</button>
+              </div>
+            );
+          })}
         </div>
-        <div style={{ padding: 16, borderTop: "1px solid #eee", display: "flex", gap: 8 }}>
-          <input
-            style={{ flex: 1, padding: 8, border: "1px solid #ddd", borderRadius: 6 }}
-            value={input}
-            onChange={(e)=>setInput(e.target.value)}
-            placeholder="Type a message or /tool <name> <json>"
-            onKeyDown={(e)=>{ if(e.key==="Enter" && !e.shiftKey){ e.preventDefault(); onSend(); } }}
-          />
-          <button onClick={onSend}>Send</button>
-        </div>
+      )}
+
+      <div className="chat-input">
+        <textarea
+          placeholder="Type a message or /tool <name> <json> (paste images/videos too)"
+          value={input}
+          rows={1}
+          className="ta"
+          onChange={(e)=>setInput(e.target.value)}
+          onPaste={onPaste}
+          onInput={(e)=>{
+            const el = e.currentTarget; el.style.height = "auto"; el.style.height = Math.min(el.scrollHeight, 128)+"px";
+          }}
+          onKeyDown={(e)=>{ if(e.key==="Enter" && !e.shiftKey){ e.preventDefault(); handleSend(); } }}
+        />
+        <input type="file" className="hidden" accept="image/*,video/*,audio/*" ref={fileInputRef} onChange={onFileChange} />
+        <button className="btn ghost" onClick={() => fileInputRef.current?.click()}>Attach</button>
+        <button className="btn primary" onClick={handleSend} disabled={!input.trim() && attachments.length===0}>Send</button>
+        <button className="btn" onClick={onListTools}>List Tools</button>
       </div>
+
+      {showSuggestions && (
+        <div className="modal" role="dialog" aria-modal="true">
+          <div className="modal-box">
+            <div className="modal-header">
+              <div className="modal-title">Try these ideas</div>
+              <button className="btn ghost" onClick={()=>setShowSuggestions(false)}>Close</button>
+            </div>
+            <div className="modal-body">
+              <div className="hint">Basics</div>
+              <div className="chips">
+                {samples.map((s, i) => (
+                  <button key={`b-${i}`} className="chip" onClick={()=>{ setInput(s); setShowSuggestions(false); }}>{s}</button>
+                ))}
+              </div>
+              <div className="hint">Advanced</div>
+              <div className="chips scroll">
+                {[
+                  "Call ping + math: /tool ping {} and /tool math.add {\"a\":5,\"b\":7}",
+                  "Chain: /tool time.now {} then /tool echo {\"message\":\"Use this time\"}",
+                  "Fetch title: /tool http.getTitle {\"url\":\"https://news.ycombinator.com\"}",
+                ].map((t, i) => (
+                  <button key={`a-${i}`} className="chip" onClick={()=>{ setInput(t); setShowSuggestions(false); }}>{t}</button>
+                ))}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
