@@ -154,7 +154,7 @@ export default function App() {
     if (autoPlanTools) {
       const planId = crypto.randomUUID();
       setMessages((m) => [...m, { id: planId, role: "assistant", text: "Planning tool call…", loading: true, steps: ["Auto-planning with local LLM"] }]);
-      await autoPlanAndExecute(planId, text);
+      await autoPlanAndExecute(planId, message);
       return;
     }
 
