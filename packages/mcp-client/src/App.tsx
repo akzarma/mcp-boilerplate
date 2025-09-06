@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { connectMcp, listTools, callTool, isMcpConnected } from "./mcp";
-import { ensureLlm, isLlmReady, getLlmProgress, summarizeTool } from "./llm";
+import { ensureLlm, isLlmReady, getLlmProgress, summarizeTool, planToolCall } from "./llm";
 import "./app.css";
 
 type Msg = {
@@ -30,6 +30,7 @@ export default function App() {
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [showSuggestions, setShowSuggestions] = useState(false);
   const [useLocalLlm, setUseLocalLlm] = useState(false);
+  const [autoPlanTools, setAutoPlanTools] = useState(false);
   const [llmProgress, setLlmProgress] = useState(0);
   const scrollRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -157,6 +158,14 @@ export default function App() {
       return;
     }
 
+    // If auto planning is enabled, ask the local LLM to pick a tool
+    if (autoPlanTools) {
+      const planId = crypto.randomUUID();
+      setMessages((m) => [...m, { id: planId, role: "assistant", text: "Planning tool call…", loading: true, steps: ["Auto-planning with local LLM"] }]);
+      await autoPlanAndExecute(planId, text);
+      return;
+    }
+
     // Local echo fallback for plain chat
     setMessages((m) => [...m, { id: crypto.randomUUID(), role: "assistant", text: "(local) I received your message." }]);
   };
@@ -190,6 +199,44 @@ export default function App() {
     return one.length > n ? one.slice(0, n - 1) + '…' : one;
   }
 
+  async function autoPlanAndExecute(planId: string, userText: string) {
+    try {
+      if (!isMcpConnected()) await connectMcp();
+      // Ensure tools
+      let t = tools;
+      if (!t || t.length === 0) {
+        const res = await listTools();
+        const arr = Array.isArray(res) ? res : (res as any).tools || [];
+        setTools(arr);
+        t = arr;
+      }
+      await ensureLlm();
+      const plan = await planToolCall(t, userText);
+      if (!plan || !plan.name) {
+        setMessages((m) => m.map((msg) => msg.id === planId ? ({ ...msg, loading: false, text: "I couldn't find a suitable tool for that. You can also use /tool <name> <json>.", steps: [ ...(msg.steps||[]), "No tool matched" ] }) : msg));
+        return;
+      }
+      setMessages((m) => m.map((msg) => msg.id === planId ? ({ ...msg, steps: [ ...(msg.steps||[]), `Suggested: ${plan.name}`, `Args: ${safeString(plan.args)}` ] }) : msg));
+      const out = await callTool(plan.name, plan.args);
+      const outStr = JSON.stringify(out, null, 2);
+      setMessages((m) => m.map((msg) => msg.id === planId ? ({ ...msg, loading: false, text: outStr, steps: [ ...(msg.steps||[]), `Result: ${truncateOneLine(out)}` ] }) : msg));
+      if (useLocalLlm) {
+        const explainId = crypto.randomUUID();
+        setMessages((m) => [...m, { id: explainId, role: "assistant", text: "Summarizing with local LLM…", loading: true }]);
+        try {
+          const timer = setInterval(() => setLlmProgress(getLlmProgress()), 200);
+          const summary = await summarizeTool(plan.name, plan.args, out);
+          clearInterval(timer);
+          setMessages((m) => m.map((msg) => msg.id === explainId ? ({ ...msg, loading: false, text: summary }) : msg));
+        } catch (e) {
+          setMessages((m) => m.map((msg) => msg.id === explainId ? ({ ...msg, loading: false, text: `LLM error: ${e}` }) : msg));
+        }
+      }
+    } catch (e) {
+      setMessages((m) => m.map((msg) => msg.id === planId ? ({ ...msg, loading: false, text: `Auto plan error: ${e}`, error: String(e), steps: [ ...(msg.steps||[]), `Error: ${String(e)}` ] }) : msg));
+    }
+  }
+
   return (
     <div className="chat-root">
       <header className="chat-header">
@@ -201,9 +248,17 @@ export default function App() {
           <button className={`btn ${useLocalLlm? 'primary': ''}`} onClick={()=> setUseLocalLlm(v=>!v)}>
             LLM: {useLocalLlm? (isLlmReady()? 'On' : `On (downloading ${llmProgress}%)`) : 'Off'}
           </button>
+          <button className={`btn ${autoPlanTools? 'primary': ''}`} onClick={()=> { setAutoPlanTools(v=>!v); if (!useLocalLlm) setUseLocalLlm(true); }} title="Use LLM to pick a tool for plain messages">
+            Auto Tool: {autoPlanTools? 'On' : 'Off'}
+          </button>
           <span>Server: {ready? "connected" : "connecting..."}</span>
         </div>
       </header>
+
+      {/* hidden helper function in component scope */}
+      {/* eslint-disable-next-line */}
+      {/* @ts-ignore */}
+      {false && <div />}
 
       <div className="chat-body" ref={scrollRef}>
         {messages.length === 0 && (
