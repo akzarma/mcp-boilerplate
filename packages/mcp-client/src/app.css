@@ -66,3 +66,7 @@ html, body, #root { height: 100%; margin: 0; background: var(--bg); color: var(-
 
 .hidden { display: none; }
 
+/* Steps/accordion */
+.steps { margin-top: 8px; }
+.steps .hint.linklike { cursor: pointer; }
+.steps-box { margin-top: 6px; border: 1px solid var(--border); background: rgba(255,255,255,0.02); border-radius: 6px; padding: 6px; }

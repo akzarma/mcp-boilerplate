@@ -2,7 +2,15 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { connectMcp, listTools, callTool, isMcpConnected } from "./mcp";
 import "./app.css";
 
-type Msg = { role: "user" | "assistant" | "system"; text: string };
+type Msg = {
+  id: string;
+  role: "user" | "assistant" | "system";
+  text: string;
+  reasoning?: string;
+  steps?: string[];
+  loading?: boolean;
+  error?: string;
+};
 type Attachment = {
   id: string;
   name: string;
@@ -30,7 +38,7 @@ export default function App() {
         setReady(true);
         setMessages((m) => [
           ...m,
-          { role: "assistant", text: "Hi! I’m your MCP Assistant. Ask me to call tools or just chat. Try /tool <name> <json>." },
+          { id: crypto.randomUUID(), role: "assistant", text: "Hi! I’m your MCP Assistant. Ask me to call tools or just chat. Try /tool <name> <json>." },
         ]);
       } catch (e) {
         setMessages((m) => [...m, { role: "system", text: `Failed to connect MCP: ${e}` }]);
@@ -98,22 +106,40 @@ export default function App() {
     const pending = attachments.slice();
     setInput("");
     setAttachments([]);
-    setMessages((m) => [...m, { role: "user", text: message || "(sent attachments)" }]);
+    setMessages((m) => [...m, { id: crypto.randomUUID(), role: "user", text: message || "(sent attachments)" }]);
 
     const cmd = parseSlash(message);
     if (cmd) {
+      const callId = crypto.randomUUID();
+      const startSteps = [
+        `Calling tool: ${cmd.name}`,
+        `Args: ${safeString(cmd.args)}`,
+      ];
+      setMessages((m) => [
+        ...m,
+        { id: callId, role: "assistant", text: "Working…", loading: true, steps: startSteps },
+      ]);
       try {
         if (!isMcpConnected()) await connectMcp();
         const out = await callTool(cmd.name, cmd.args);
-        setMessages((m) => [...m, { role: "assistant", text: JSON.stringify(out, null, 2) }]);
-      } catch (e) {
-        setMessages((m) => [...m, { role: "assistant", text: `Error: ${e}` }]);
+        const outStr = JSON.stringify(out, null, 2);
+        setMessages((m) => m.map((msg) =>
+          msg.id === callId
+            ? { ...msg, loading: false, text: outStr, steps: [...(msg.steps||[]), `Result: ${truncateOneLine(out)}`] }
+            : msg
+        ));
+      } catch (e: any) {
+        setMessages((m) => m.map((msg) =>
+          msg.id === callId
+            ? { ...msg, loading: false, text: `Error: ${e}`, error: String(e), steps: [...(msg.steps||[]), `Error: ${String(e)}`] }
+            : msg
+        ));
       }
       return;
     }
 
     // Local echo fallback for plain chat
-    setMessages((m) => [...m, { role: "assistant", text: "(local) I received your message." }]);
+    setMessages((m) => [...m, { id: crypto.randomUUID(), role: "assistant", text: "(local) I received your message." }]);
   };
 
   const onListTools = async () => {
@@ -121,7 +147,7 @@ export default function App() {
       if (!isMcpConnected()) await connectMcp();
       const t = await listTools();
       setTools(t);
-      setMessages((m) => [...m, { role: "assistant", text: `Available tools: ${t.map((x:any)=>x.name).join(", ")}` }]);
+      setMessages((m) => [...m, { id: crypto.randomUUID(), role: "assistant", text: `Available tools: ${t.map((x:any)=>x.name).join(", ")}` }]);
     } catch (e) {
       setMessages((m) => [...m, { role: "assistant", text: `List tools failed: ${e}` }]);
     }
@@ -135,6 +161,15 @@ export default function App() {
     "What time is it? /tool time.now {}",
     "Fetch a page title: /tool http.getTitle {\"url\":\"https://example.com\"}",
   ];
+
+  function safeString(v: unknown) {
+    try { return JSON.stringify(v); } catch { return String(v); }
+  }
+  function truncateOneLine(v: unknown, n = 160) {
+    const s = typeof v === 'string' ? v : safeString(v);
+    const one = s.replace(/\s+/g, ' ').trim();
+    return one.length > n ? one.slice(0, n - 1) + '…' : one;
+  }
 
   return (
     <div className="chat-root">
@@ -162,7 +197,20 @@ export default function App() {
                 <img className="avatar small" src={`https://api.dicebear.com/7.x/bottts-neutral/svg?seed=MCP`} alt="Assistant" />
               )}
               <div className={`bubble ${isUser?"user":"assistant"}`}>
-                <pre className="pre">{m.text}</pre>
+                <pre className="pre">{m.text}{m.loading?" ⏳":null}</pre>
+                {m.role === "assistant" && !m.loading && (m.reasoning || (m.steps && m.steps.length>0)) && (
+                  <details className="steps">
+                    <summary className="hint linklike">Show steps</summary>
+                    {m.reasoning && <div className="pre muted" style={{marginTop: 6}}>{m.reasoning}</div>}
+                    {m.steps && m.steps.length>0 && (
+                      <div className="steps-box">
+                        {m.steps.map((s, idx) => (
+                          <div key={idx} className="pre muted">{s}</div>
+                        ))}
+                      </div>
+                    )}
+                  </details>
+                )}
                 {!isUser && (
                   <div className="bubble-actions">
                     <button className="link" onClick={() => copyText(m.text)}>Copy</button>
