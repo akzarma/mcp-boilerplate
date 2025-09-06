@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { connectMcp, listTools, callTool, isMcpConnected } from "./mcp";
+import { ensureLlm, isLlmReady, getLlmProgress, summarizeTool } from "./llm";
 import "./app.css";
 
 type Msg = {
@@ -28,6 +29,8 @@ export default function App() {
   const [messages, setMessages] = useState<Msg[]>([]);
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [showSuggestions, setShowSuggestions] = useState(false);
+  const [useLocalLlm, setUseLocalLlm] = useState(false);
+  const [llmProgress, setLlmProgress] = useState(0);
   const scrollRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -128,6 +131,22 @@ export default function App() {
             ? { ...msg, loading: false, text: outStr, steps: [...(msg.steps||[]), `Result: ${truncateOneLine(out)}`] }
             : msg
         ));
+
+        // Optional: LLM explanation
+        if (useLocalLlm) {
+          const explainId = crypto.randomUUID();
+          setMessages((m) => [...m, { id: explainId, role: "assistant", text: "Summarizing with local LLM…", loading: true }]);
+          try {
+            // Initialize once and track progress
+            await ensureLlm();
+            const timer = setInterval(() => setLlmProgress(getLlmProgress()), 200);
+            const summary = await summarizeTool(cmd.name, cmd.args, out);
+            clearInterval(timer);
+            setMessages((m) => m.map((msg) => msg.id === explainId ? ({ ...msg, loading: false, text: summary }) : msg));
+          } catch (e) {
+            setMessages((m) => m.map((msg) => msg.id === explainId ? ({ ...msg, loading: false, text: `LLM error: ${e}` }) : msg));
+          }
+        }
       } catch (e: any) {
         setMessages((m) => m.map((msg) =>
           msg.id === callId
@@ -178,7 +197,12 @@ export default function App() {
           <img className="avatar" src={`https://api.dicebear.com/7.x/bottts-neutral/svg?seed=MCP`} alt="Assistant" />
           <div className="title">MCP Assistant</div>
         </div>
-        <div className="status">Status: {ready? "connected" : "connecting..."}</div>
+        <div className="status" style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+          <button className={`btn ${useLocalLlm? 'primary': ''}`} onClick={()=> setUseLocalLlm(v=>!v)}>
+            LLM: {useLocalLlm? (isLlmReady()? 'On' : `On (downloading ${llmProgress}%)`) : 'Off'}
+          </button>
+          <span>Server: {ready? "connected" : "connecting..."}</span>
+        </div>
       </header>
 
       <div className="chat-body" ref={scrollRef}>
