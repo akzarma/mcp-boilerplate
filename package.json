@@ -1,0 +1,16 @@
+{
+  "name": "mcp-boilerplate",
+  "version": "0.1.0",
+  "private": true,
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "npm run -w @boilerplate/mcp-server dev & npm run -w @boilerplate/mcp-client dev",
+    "build": "npm run -w @boilerplate/mcp-server build && npm run -w @boilerplate/mcp-client build",
+    "start": "npm run -w @boilerplate/mcp-server start",
+    "server:dev": "npm run -w @boilerplate/mcp-server dev",
+    "client:dev": "npm run -w @boilerplate/mcp-client dev"
+  }
+}
+
